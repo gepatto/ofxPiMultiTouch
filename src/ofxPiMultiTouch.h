@@ -10,14 +10,14 @@
 #define EVENT_CODE_X    ABS_X
 #define EVENT_CODE_Y    ABS_Y
 #define EVENT_CODE_P    ABS_PRESSURE
+
 #define TOUCH_ADDED 	1
 #define TOUCH_REMOVED 	2 
 
 class ofxPiMultiTouch : public ofThread {
-	public:
 
-  	struct input_event ev;
-	int fd, size;
+public:
+	int touch_fd, size;
 	char name[256];
 	char *device;
 	int _pX, _pY;
@@ -27,17 +27,25 @@ class ofxPiMultiTouch : public ofThread {
 	int activeSlot = 0;
 	int lastTouchEvent = -1;
 
-	std::list<int> activeTouches;
+	bool breakRead = false;
 	bool trackPointsChanged = false;
 	int slots[9];
+	
+	//std::list<int> activeTouches;
 
+	ofVec3f pos;
 
+    ~ofxPiMultiTouch(){
+		waitForThread(false);
+	}
+	
 	int init (string devicename, int w, int h, int valEvX=4095, int valEvY=4095){
 		// &devicename[0u] == convert str to char*
 		return init(&devicename[0u],  ofGetWidth(), ofGetHeight() ) ;  
 	}
 
-	int init(char * d, int w, int h, int valEvX=4095, int valEvY=4095){// for valEvX and valEvY check value Min Max evtest /dev/input/event0
+	// for valEvX and valEvY check value Min Max evtest /dev/input/event0
+	int init(char * d, int w, int h, int valEvX=4095, int valEvY=4095){
 		size = sizeof (struct input_event);
 		name[0]='U';
 		name[1]='n';
@@ -48,42 +56,62 @@ class ofxPiMultiTouch : public ofThread {
 		name[6]='n';
 		device = d;
 
-        if ((fd = open(device, O_RDONLY)) < 0) {
+        if ((touch_fd = open(device, O_RDONLY| O_NONBLOCK)) < 0) {
             return 1;
 		}
+
 		_resX=w;
 		_resY=h;
 		_pX=valEvX;
 		_pY=valEvY;
 
-		ofLog() << "TouchName: " << getName() << endl;
-
-		startThread();
-
+		start();
+  		ofAddListener(ofEvents().exit, this, &ofxPiMultiTouch::onExit);
 		return 0;
 	}
 
-
+	ofVec3f getCoordTouch(){
+		return pos;
+	}
 
 	string getName(){
-		ioctl (fd, EVIOCGNAME (sizeof (name)), name);
+		ioctl (touch_fd, EVIOCGNAME (sizeof (name)), name);
 		string str(name);
 		return str;
 	}
 
-	void exit(){
-		stopThread();
+
+private:
+    /// Start the thread.
+    void start(){
+        startThread();
+    }
+
+    void stop(){
+		if(isThreadRunning()){
+			stopThread();
+		}
+	}
+
+	void onExit(ofEventArgs& eventArgs){
+		stop();
 	}
 
 	void threadedFunction(){
-
 		while(isThreadRunning()) {
-			const size_t ev_size = sizeof(struct input_event);
-			ssize_t size;
-			size = read(fd, &ev, ev_size);
-			if (size < ev_size) {
-				ofLog()<<"Error size!\n";
-			}
+			readTouchEvents();
+		}
+	}
+
+	void readTouchEvents(){
+		
+		struct input_event ev;
+		const size_t ev_size = sizeof(struct input_event);
+		ssize_t size;
+		size = read(touch_fd, &ev, ev_size);
+
+		while(size >= 0) {
+		
 			switch(ev.type){
 				case EV_ABS:
 					
@@ -149,24 +177,30 @@ class ofxPiMultiTouch : public ofThread {
 								trackPointsChanged = false;
 								if(lastTouchEvent == TOUCH_REMOVED){
 									touchArgs.id = releasedID;
+									lock();
 									ofNotifyEvent(ofEvents().touchUp, touchArgs, this);
+									unlock();
 								}else if(lastTouchEvent == TOUCH_ADDED){
 									touchArgs.id = slots[activeSlot];
+									lock();
 									ofNotifyEvent(ofEvents().touchDown, touchArgs, this);
+									unlock();
 								}else{
 									//
 								}
 							}else{
 								touchArgs.id = slots[activeSlot];
+								lock();
 								ofNotifyEvent(ofEvents().touchMoved, touchArgs, this);
+								unlock();
 							}
-							//ofLog() << "EV_SYN lastEvent: " << lastTouchEvent << " ,id " <<  slots[activeSlot] << " " << pos.x << " " << pos.y;
+
 							lastTouchEvent = -1;
 						break;
 						}
 
 						case SYN_DROPPED:
-							ofLog() << "HELP! can't keep up";
+							ofLog() << "SYN_DROPPED!";
 						break;
 
 						default:
@@ -180,11 +214,9 @@ class ofxPiMultiTouch : public ofThread {
 				break;
 					
 			}
+			
+			size = read(touch_fd, &ev, ev_size);
 		}
-	}
 
-	ofVec3f pos;
-	ofVec3f getCoordTouch(){
-		return pos;
 	}
 };
